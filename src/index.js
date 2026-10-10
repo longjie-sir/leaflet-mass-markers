@@ -15,10 +15,14 @@
  *  2. The canvas lives in the overlay pane. Dragging moves it with the map pane
  *     on the GPU: no re-projection, no repaint.
  *  3. During the zoom animation the canvas follows with a CSS transform using
- *     the same maths as Leaflet's own canvas renderer.
+ *     the same maths as Leaflet's own canvas renderer. Frame-by-frame animations
+ *     that only change `pixelOrigin` / `zoom` (flyTo, flyToBounds, ...) never
+ *     move the map pane, so the layer re-projects and repaints once per frame
+ *     instead, keeping the items glued to the basemap for the whole flight.
  *  4. Coordinates are produced by Leaflet's own `latLngToContainerPoint()`, so
- *     the layer is CRS-agnostic. They are recomputed in batch only when the view
- *     settles (`moveend` / `zoomend` / `resize`) and stored in typed arrays.
+ *     the layer is CRS-agnostic. They are recomputed in batch when the view
+ *     settles (`moveend` / `zoomend` / `resize`) and, during view animations,
+ *     once per frame; the results are stored in typed arrays.
  *     Drawing and hit testing read that very same array, therefore what you see
  *     is always what you can click.
  *  5. Only items inside the viewport are drawn; labels are de-overlapped with a
@@ -331,7 +335,17 @@ export const MassMarkers = L.Layer.extend({
         this._pendingPoint = null
         this._isDragging = false
         this._isZooming = false
+        // True between `movestart` and `moveend`, i.e. while flyTo / panBy /
+        // animated zoom are running. Decides whether per-frame repaints may skip
+        // labels, and lets the settling repaint put them back.
+        this._isMoving = false
         this._offIconReady = null
+
+        // Per-frame re-projection throttle state for animated view changes
+        // (see `_onViewFrame`).
+        this._frameRaf = 0
+        this._frameZoom = null
+        this._frameOrigin = null
 
         this._canvas = null
         this._ctx = null
@@ -344,6 +358,32 @@ export const MassMarkers = L.Layer.extend({
         // Browser zoom changes devicePixelRatio. When the container CSS size
         // stays the same Leaflet fires no `resize`, so listen on window as well.
         this._onWindowResize = () => this._reset()
+
+        // Animated view changes (flyTo, ...): re-project + repaint inside rAF, at
+        // most once per frame.
+        this._runViewFrame = () => {
+            this._frameRaf = 0
+            const map = this._map
+            if (!map || !this._canvas || this._groups.size === 0) return
+
+            // If a full repaint (labels included) is already queued — e.g. the one
+            // requested by `_reset` — it must be folded into this frame. Cancelling
+            // it outright would drop the labels until the next view change.
+            const pendingFullDraw = !!this._drawRaf
+            if (this._drawRaf) {
+                cancelAnimationFrame(this._drawRaf)
+                this._drawRaf = 0
+            }
+
+            this._zoom = map.getZoom()
+            this._projectAll()
+            // Skip labels while the animation is running: text is by far the most
+            // expensive step (per-item strokeText + fillText), and dropping it keeps
+            // thousands of items at a steady frame rate. Once the animation ends
+            // (`_isMoving === false`), or when a full repaint was already queued,
+            // labels are drawn as usual so they never stay missing.
+            this._draw(this._isMoving && !pendingFullDraw)
+        }
     },
 
     // ==================== Lifecycle ====================
@@ -365,8 +405,14 @@ export const MassMarkers = L.Layer.extend({
         pane.appendChild(canvas)
 
         map.on('moveend', this._onViewChange, this)
+        map.on('movestart', this._onMoveStart, this)
         map.on('zoomend', this._onZoomEnd, this)
         map.on('zoomstart', this._onZoomStart, this)
+        // flyTo and friends fire `zoom` / `move` on every frame while NOT moving the
+        // map pane, so the layer has to re-project per frame. Without this the items
+        // stay glued to the screen and only jump into place once the flight ends.
+        map.on('zoom', this._onViewFrame, this)
+        map.on('move', this._onViewFrame, this)
         map.on('resize', this._onViewChange, this)
         map.on('viewreset', this._onViewChange, this)
         map.on('mousemove', this._onMouseMove, this)
@@ -395,8 +441,11 @@ export const MassMarkers = L.Layer.extend({
 
         if (target) {
             target.off('moveend', this._onViewChange, this)
+            target.off('movestart', this._onMoveStart, this)
             target.off('zoomend', this._onZoomEnd, this)
             target.off('zoomstart', this._onZoomStart, this)
+            target.off('zoom', this._onViewFrame, this)
+            target.off('move', this._onViewFrame, this)
             target.off('resize', this._onViewChange, this)
             target.off('viewreset', this._onViewChange, this)
             target.off('mousemove', this._onMouseMove, this)
@@ -424,6 +473,10 @@ export const MassMarkers = L.Layer.extend({
         if (this._drawRaf) {
             cancelAnimationFrame(this._drawRaf)
             this._drawRaf = 0
+        }
+        if (this._frameRaf) {
+            cancelAnimationFrame(this._frameRaf)
+            this._frameRaf = 0
         }
         if (this._canvas && this._canvas.parentNode) {
             this._canvas.parentNode.removeChild(this._canvas)
@@ -811,7 +864,56 @@ export const MassMarkers = L.Layer.extend({
     },
 
     _onViewChange() {
+        // The view has settled: leave the animation state, the follow-up `_reset`
+        // repaints with labels again.
+        this._isMoving = false
         this._reset()
+    },
+
+    _onMoveStart() {
+        this._isMoving = true
+    },
+
+    /**
+     * Keep items in sync with the basemap during frame-by-frame view changes
+     * (flyTo, flyToBounds, ...).
+     *
+     * Why this is needed: those animations update `pixelOrigin` and `zoom` on
+     * every frame but never move the map pane, and Leaflet only fires
+     * `moveend` / `zoomend` at the very end. The canvas therefore cannot ride
+     * along with the pane; items look pinned to the screen and snap into place
+     * when the flight stops. Re-projecting once per frame fixes that.
+     *
+     * Re-projecting is preferred over the CSS-transform follow used by Leaflet's
+     * own vector renderers: it yields the true screen position for the current
+     * view, so there is no blank edge and no blurry scaling — the icon size stays
+     * constant. The cost is an O(n) projection plus one repaint per frame, which
+     * stays inside the frame budget for thousands of items.
+     *
+     * Two cases must be skipped:
+     *   1. CSS zoom animation (`zoomanim`): already followed by `_animateZoom`.
+     *   2. Drag / `panBy`: only the map pane moves, and the canvas already rides
+     *      along with it on the GPU — re-projecting would double the offset.
+     *      Detected by checking that neither zoom nor pixelOrigin changed.
+     * @private
+     */
+    _onViewFrame() {
+        const map = this._map
+        if (!map || !this._canvas || this._groups.size === 0) return
+        if (map._animatingZoom) return
+
+        const zoom = map.getZoom()
+        const origin = map.getPixelOrigin()
+        if (!origin) return
+
+        // Drag / pan animation: neither zoom nor pixelOrigin changed, the canvas
+        // already follows the pane.
+        if (zoom === this._frameZoom && this._frameOrigin && this._frameOrigin.equals(origin)) return
+        this._frameZoom = zoom
+        this._frameOrigin = origin.clone()
+
+        if (this._frameRaf) return
+        this._frameRaf = requestAnimationFrame(this._runViewFrame)
     },
 
     _onZoomStart() {
@@ -828,9 +930,11 @@ export const MassMarkers = L.Layer.extend({
     /**
      * Paint everything: group filter, minZoom filter, viewport cull, icons,
      * then labels on top.
+     * @param {boolean} [skipLabels] - Skip the label pass. Used for per-frame
+     *   repaints while the view is still animating.
      * @private
      */
-    _draw() {
+    _draw(skipLabels) {
         const ctx = this._ctx
         const map = this._map
         if (!ctx || !map || !this._canvas) return
@@ -895,15 +999,19 @@ export const MassMarkers = L.Layer.extend({
                     }
                 }
 
-                visGroup.push(group)
-                visIdx.push(i)
-                visX.push(x)
-                visY.push(y)
+                // Visible items are only needed for the label pass, so while the
+                // view is animating the pushes are skipped entirely.
+                if (!skipLabels) {
+                    visGroup.push(group)
+                    visIdx.push(i)
+                    visX.push(x)
+                    visY.push(y)
+                }
             }
         })
 
         // Pass 2: labels, drawn after every icon so they are never covered.
-        if (visX.length > 0 && this._getLabel && zoom >= o.label.minZoom) {
+        if (!skipLabels && visX.length > 0 && this._getLabel && zoom >= o.label.minZoom) {
             this._drawLabels(ctx, visGroup, visIdx, visX, visY)
         }
     },
