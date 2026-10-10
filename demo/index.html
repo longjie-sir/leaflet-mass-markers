@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>leaflet-mass-markers demo — 30,000 labeled points</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!--
+      The UMD build registers itself on the Leaflet namespace, so a plain
+      <script> tag is enough. Opening this file directly from disk works;
+      serving it over http works too.
+    -->
+    <script src="../dist/leaflet-mass-markers.umd.cjs"></script>
+
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+
+        #map {
+            position: absolute;
+            inset: 0;
+        }
+
+        .panel {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 1000;
+            width: 232px;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, .95);
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, .18);
+            font-size: 12px;
+            color: #222;
+        }
+
+        .panel h1 {
+            margin: 0 0 8px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .panel .row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .panel .swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex: 0 0 auto;
+        }
+
+        .panel .count {
+            margin-left: auto;
+            color: #888;
+        }
+
+        .panel .stats {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+            line-height: 1.7;
+            color: #555;
+        }
+
+        .panel b {
+            color: #111;
+        }
+
+        .panel .hint {
+            margin-top: 8px;
+            color: #999;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+    <h1>leaflet-mass-markers</h1>
+    <div id="groups"></div>
+    <div class="stats">
+        Drawn: <b id="drawn">0</b> / <b id="total">0</b><br/>
+        Zoom: <b id="zoom">0</b> &nbsp; FPS: <b id="fps">0</b>
+    </div>
+    <div class="hint">
+        Drag and zoom around. Groups C and D only appear from zoom 9 and 12.
+    </div>
+</div>
+
+<script>
+    // ---------- Fake data ----------
+
+    var CENTER = [43.9, 85.9]
+    var SPREAD = 6
+
+    var GROUPS = [
+        {key: 'A', name: 'Rain gauge', color: '#2d57f7', minZoom: 0, share: 0.45},
+        {key: 'B', name: 'River', color: '#00a86b', minZoom: 0, share: 0.25},
+        {key: 'C', name: 'Groundwater', color: '#f4a100', minZoom: 9, share: 0.2},
+        {key: 'D', name: 'Video', color: '#e63946', minZoom: 12, share: 0.1}
+    ]
+
+    var TOTAL = 30000
+
+    function makeIcon(color) {
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
+            '<circle cx="8" cy="8" r="6" fill="' + color + '" stroke="#ffffff" stroke-width="2"/></svg>'
+        return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+    }
+
+    function generateData() {
+        var items = []
+        var seq = 0
+        for (var g = 0; g < GROUPS.length; g++) {
+            var group = GROUPS[g]
+            var n = Math.round(TOTAL * group.share)
+            var icon = makeIcon(group.color)
+            for (var i = 0; i < n; i++) {
+                seq++
+                items.push({
+                    id: seq,
+                    name: group.name + ' #' + seq,
+                    group: group.key,
+                    color: icon,
+                    minZoom: group.minZoom,
+                    lat: CENTER[0] + (Math.random() - 0.5) * SPREAD * 2,
+                    lng: CENTER[1] + (Math.random() - 0.5) * SPREAD * 4
+                })
+            }
+        }
+        return items
+    }
+
+    // ---------- Map ----------
+
+    var map = L.map('map', {preferCanvas: true}).setView(CENTER, 7)
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map)
+
+    var data = generateData()
+
+    var layer = L.massMarkers({
+        getLatLng: function (d) {
+            return [d.lat, d.lng]
+        },
+        getIcon: function (d) {
+            return {url: d.color, width: 16, height: 16}
+        },
+        getLabel: function (d) {
+            return d.name
+        },
+        getMinZoom: function (d) {
+            return d.minZoom
+        },
+        getGroup: function (d) {
+            return d.group
+        },
+        popupContent: function (d) {
+            return '<div style="padding:6px 8px;font-size:12px;line-height:1.7">' +
+                '<b style="font-size:13px">' + d.name + '</b><br/>' +
+                'Group: ' + d.group + '<br/>' +
+                'Visible from zoom: ' + d.minZoom + '<br/>' +
+                'Position: ' + d.lat.toFixed(5) + ', ' + d.lng.toFixed(5) +
+                '</div>'
+        },
+        pointRadius: 4,
+        label: {
+            offsetY: 10,
+            cellSize: 30,
+            maxChars: 16
+        }
+    }).addTo(map)
+
+    var t0 = performance.now()
+    layer.setData(data)
+    var loadMs = (performance.now() - t0).toFixed(1)
+
+    layer.on('click', function (e) {
+        console.log('[click]', e.item, e.latlng)
+    })
+
+    // ---------- Controls ----------
+
+    var groupsEl = document.getElementById('groups')
+
+    GROUPS.forEach(function (group) {
+        var row = document.createElement('label')
+        row.className = 'row'
+
+        var box = document.createElement('input')
+        box.type = 'checkbox'
+        box.checked = true
+        box.addEventListener('change', function () {
+            layer.setGroupVisible(group.key, box.checked)
+        })
+
+        var swatch = document.createElement('span')
+        swatch.className = 'swatch'
+        swatch.style.background = group.color === undefined ? '#999' : groupColor(group.key)
+
+        var text = document.createElement('span')
+        text.textContent = group.key + ' · ' + group.name +
+            (group.minZoom ? ' (z≥' + group.minZoom + ')' : '')
+
+        var count = document.createElement('span')
+        count.className = 'count'
+        count.textContent = data.filter(function (d) {
+            return d.group === group.key
+        }).length
+
+        row.appendChild(box)
+        row.appendChild(swatch)
+        row.appendChild(text)
+        row.appendChild(count)
+        groupsEl.appendChild(row)
+    })
+
+    function groupColor(key) {
+        for (var i = 0; i < GROUPS.length; i++) {
+            if (GROUPS[i].key === key) return GROUPS[i].color
+        }
+        return '#999'
+    }
+
+    // ---------- Stats ----------
+
+    var drawnEl = document.getElementById('drawn')
+    var totalEl = document.getElementById('total')
+    var zoomEl = document.getElementById('zoom')
+    var fpsEl = document.getElementById('fps')
+
+    totalEl.textContent = layer.getCount() + ' (parsed in ' + loadMs + 'ms)'
+
+    var frames = 0
+    var lastFpsUpdate = performance.now()
+
+    function tick() {
+        frames++
+        var now = performance.now()
+        if (now - lastFpsUpdate >= 500) {
+            fpsEl.textContent = Math.round(frames * 1000 / (now - lastFpsUpdate))
+            frames = 0
+            lastFpsUpdate = now
+
+            zoomEl.textContent = map.getZoom()
+            drawnEl.textContent = countVisible()
+        }
+        requestAnimationFrame(tick)
+    }
+
+    function countVisible() {
+        var zoom = map.getZoom()
+        var visibleGroups = layer.getVisibleGroups()
+        var n = 0
+        for (var i = 0; i < data.length; i++) {
+            var d = data[i]
+            if (visibleGroups.indexOf(d.group) === -1) continue
+            if (zoom < d.minZoom) continue
+            n++
+        }
+        return n
+    }
+
+    requestAnimationFrame(tick)
+</script>
+
+</body>
+</html>

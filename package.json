@@ -1,0 +1,67 @@
+{
+  "name": "leaflet-mass-markers",
+  "version": "1.0.0",
+  "description": "Render tens of thousands of labeled markers on a single canvas for Leaflet. Icon + text label, zoom-level based visibility, group toggling, click/hover/popup support, zero dependencies.",
+  "keywords": [
+    "leaflet",
+    "leaflet-plugin",
+    "canvas",
+    "marker",
+    "markers",
+    "label",
+    "performance",
+    "mass",
+    "bulk",
+    "gis",
+    "map"
+  ],
+  "license": "MIT",
+  "author": "",
+  "homepage": "https://github.com/your-name/leaflet-mass-markers#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-name/leaflet-mass-markers.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-name/leaflet-mass-markers/issues"
+  },
+  "type": "module",
+  "main": "./dist/leaflet-mass-markers.umd.cjs",
+  "module": "./dist/leaflet-mass-markers.js",
+  "unpkg": "./dist/leaflet-mass-markers.umd.cjs",
+  "jsdelivr": "./dist/leaflet-mass-markers.umd.cjs",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./dist/leaflet-mass-markers.js",
+      "require": "./dist/leaflet-mass-markers.umd.cjs"
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "leaflet": "^1.7.0"
+  },
+  "devDependencies": {
+    "leaflet": "^1.9.4",
+    "vite": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "sideEffects": true
+}
