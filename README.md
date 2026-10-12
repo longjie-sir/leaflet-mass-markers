@@ -50,7 +50,7 @@ Or straight from a CDN — the UMD build registers itself on `L`:
 ```html
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet-mass-markers/dist/leaflet-mass-markers.umd.cjs"></script>
+<script src="leaflet-mass-markers.umd.cjs"></script>
 ```
 
 ## Quick start
